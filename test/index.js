@@ -10,6 +10,8 @@ const noPermissionsZip = path.join(__dirname, 'no-permissions.zip')
 const subdirZip = path.join(__dirname, 'file-in-subdir-without-subdir-entry.zip')
 const symlinkDestZip = path.join(__dirname, 'symlink-dest.zip')
 const symlinkZip = path.join(__dirname, 'symlink.zip')
+const symlinkTraversalZip = path.join(__dirname, 'symlink-traversal.zip')
+const symlinkLexicalBypassZip = path.join(__dirname, 'symlink-lexical-bypass.zip')
 const brokenZip = path.join(__dirname, 'broken.zip')
 
 const relativeTarget = './cats'
@@ -56,6 +58,15 @@ test('symlinks', async t => {
   t.truthy(stats.isSymbolicLink(), 'symlink is valid')
   const linkPath = await fs.readlink(symlink)
   t.is(linkPath, 'orange')
+})
+
+test('rejects symlinks that point outside the target directory', async t => {
+  const dirPath = await mkdtemp(t, 'symlink-traversal')
+
+  const error = await t.throwsAsync(extract(symlinkTraversalZip, { dir: dirPath }))
+
+  t.regex(error.message, /Out of bound symlink target/)
+  await pathDoesntExist(t, path.join(dirPath, 'symlink', 'escape'), 'symlink not created')
 })
 
 test('directories', async t => {
@@ -112,7 +123,7 @@ if (process.platform !== 'win32') {
     await pathDoesntExist(t, path.join(dirPath, 'file.txt'), "file doesn't exist at symlink target")
 
     await t.throwsAsync(extract(symlinkDestZip, { dir: dirPath }), {
-      message: /Out of bound path ".*?" found while processing file symlink-dest\/aaa\/file.txt/
+      message: 'Out of bound symlink target "/tmp" found while processing file symlink-dest/aaa'
     })
   })
 
@@ -123,10 +134,24 @@ if (process.platform !== 'win32') {
     const symlinkDestDir = path.join(dirPath, 'symlink-dest')
 
     await pathExists(t, symlinkDestDir, 'target folder created')
-    await pathExists(t, path.join(symlinkDestDir, 'aaa'), 'symlink created')
-    await pathExists(t, path.join(symlinkDestDir, 'ccc'), 'parent folder created')
+    // Extraction is rejected at the out of bound symlink itself, so neither it nor any
+    // entry after it reaches the disk.
+    await pathDoesntExist(t, path.join(symlinkDestDir, 'aaa'), 'out of bound symlink not created')
+    await pathDoesntExist(t, path.join(symlinkDestDir, 'ccc'), 'later entries not processed')
     await pathDoesntExist(t, path.join(symlinkDestDir, 'ccc/file.txt'), 'file not created in original folder')
     await pathDoesntExist(t, path.join(dirPath, 'file.txt'), 'file not created in symlink target')
+  })
+
+  test('rejects symlinks whose parent directory is itself a symlink', async t => {
+    const dirPath = await mkdtemp(t, 'symlink-lexical-bypass')
+
+    // 'a' -> '.' and 'a/b' -> '.' make the lexical path of 'a/b/escape' two levels
+    // deeper than where it really lands, so its target only looks contained until it
+    // is resolved against the real parent directory.
+    const error = await t.throwsAsync(extract(symlinkLexicalBypassZip, { dir: dirPath }))
+
+    t.regex(error.message, /Out of bound symlink target/)
+    await pathDoesntExist(t, path.join(dirPath, 'escape'), 'escaping symlink not created')
   })
 
   test('defaultDirMode', async t => {
